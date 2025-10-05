@@ -5,30 +5,45 @@ edition = "2021"
 
 [lib]
 name = "polars_tdigest"
-crate-type= ["rlib"]
-
+crate-type = ["rlib"]
 
 [dependencies]
+rayon = "1.11"
+serde = { version = "1.0.228", features = ["derive"] }
 
-serde = { version = "1", features = ["derive"] }
-polars = { version = "0.40.0", features=["dtype-struct", "fmt"], default-features = false }
-ordered-float = { version = "4.2.0", features=["serde"] }
-polars-arrow = "0.40.0"
-serde_json = "1.0.117"
-polars-io = { version = "0.40.0", features=["json"] }
-pyo3 = { version = "0.21.2", features = ["extension-module", "abi3-py38"] }
-pyo3-polars = { version = "0.14.0", features = ["derive"] }
-rand = "0.8"
+# Polars 0.51 stack
+polars = { version = "0.51.0", default-features = false, features = ["dtype-struct", "dtype-array", "fmt"] }
+polars-core = "0.51.0"
+polars-arrow = "0.51.0"
+polars-plan = "0.51.0"
+polars-io = { version = "0.51.0", features = ["json"] }
+
+ordered-float = { version = "5.1.0", features = ["serde"] }
+serde_json = "1.0.145"
+rand = "0.9.2"
+
+# Python glue (optional)
+pyo3 = { version = "0.25", optional = true }
+# Need the `derive` feature for `pyo3_polars::derive::polars_expr`
+pyo3-polars = { version = "0.24", optional = true, features = ["derive"] }
 
 [dev-dependencies]
-criterion = "0.5.1"
+criterion = "0.7.0"
+
+[features]
+default = []
+# Enabling `python` pulls in pyo3 + pyo3-polars with derive, and enables extension-module.
+python = [
+  "dep:pyo3",
+  "dep:pyo3-polars",
+  "pyo3/extension-module",
+  "pyo3-polars/derive"
+]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 jemallocator = { version = "0.5", features = ["disable_initial_exec_tls"] }
 
-
 [[bench]]
-name = "parser_bench"
+name = "tdigest_bench"
 harness = false
 path = "benches/parser_bench.rs"
-

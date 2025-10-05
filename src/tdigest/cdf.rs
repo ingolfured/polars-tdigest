@@ -23,7 +23,7 @@ pub fn exact_ecdf_for_sorted(sorted: &[f64]) -> Vec<f64> {
         // midpoint convention on ties
         let mid = (i + j) as f64 / 2.0;
         let val = mid / nf;
-        out.extend(std::iter::repeat(val).take(j - i));
+        out.extend(std::iter::repeat_n(val, j - i));
 
         i = j;
     }

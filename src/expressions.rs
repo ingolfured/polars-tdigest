@@ -5,12 +5,15 @@ use polars::prelude::*;
 use crate::tdigest::codecs::parse_tdigests_any;
 use crate::tdigest::{codecs::tdigest_to_series, TDigest};
 
-use polars_core::export::rayon::prelude::*;
-use polars_core::utils::arrow::array::Array;
 use polars_core::utils::arrow::array::Float64Array;
 use polars_core::POOL;
+
+#[cfg(feature = "python")]
 use pyo3_polars::derive::polars_expr;
-use serde::Deserialize;
+
+use rayon::iter::ParallelBridge;
+use rayon::prelude::*;
+use serde::Deserialize; // needed for .par_bridge()
 
 static SUPPORTED_TYPES: &[DataType] = &[
     DataType::Float32,
@@ -39,17 +42,17 @@ fn tdigest_fields_cfg(
 ) -> Vec<Field> {
     vec![
         Field::new(
-            "centroids",
+            "centroids".into(),
             DataType::List(Box::new(DataType::Struct(vec![
-                Field::new("mean", mean_dt),
-                Field::new("weight", weight_dt),
+                Field::new("mean".into(), mean_dt),
+                Field::new("weight".into(), weight_dt),
             ]))),
         ),
-        Field::new("sum", sum_dt),
-        Field::new("min", minmax_dt.clone()),
-        Field::new("max", minmax_dt),
-        Field::new("count", DataType::Int64), // keep as-is for now
-        Field::new("max_size", DataType::Int64),
+        Field::new("sum".into(), sum_dt),
+        Field::new("min".into(), minmax_dt.clone()),
+        Field::new("max".into(), minmax_dt),
+        Field::new("count".into(), DataType::Int64), // keep as-is for now
+        Field::new("max_size".into(), DataType::Int64),
     ]
 }
 
@@ -57,46 +60,35 @@ fn tdigest_fields() -> Vec<Field> {
     // current f64 payload (existing behavior)
     tdigest_fields_cfg(
         DataType::Float64, // mean
-        DataType::Int64,   // weight (we’ll flip to Float64 later if you want)
+        DataType::Int64,   // weight (exact integer counts)
         DataType::Float64, // min/max
         DataType::Float64, // sum
     )
 }
 
 fn tdigest_fields_32() -> Vec<Field> {
-    // compact payload: f32 centroids + min/max, keep sum f64
+    // compact payload: f32 centroids + min/max, keep sum f64; weight as UInt32 (matches codecs)
     tdigest_fields_cfg(
         DataType::Float32, // mean
-        DataType::Float32, // weight
+        DataType::UInt32,  // weight (compact exact counts)
         DataType::Float32, // min/max
         DataType::Float64, // sum (precision)
     )
 }
 
 fn tdigest_output(_: &[Field]) -> PolarsResult<Field> {
-    Ok(Field::new("tdigest", DataType::Struct(tdigest_fields())))
+    Ok(Field::new(
+        "tdigest".into(),
+        DataType::Struct(tdigest_fields()),
+    ))
 }
 
 fn tdigest_output_32(_: &[Field]) -> PolarsResult<Field> {
-    Ok(Field::new("tdigest", DataType::Struct(tdigest_fields_32())))
+    Ok(Field::new(
+        "tdigest".into(),
+        DataType::Struct(tdigest_fields_32()),
+    ))
 }
-
-// fn tdigest_fields() -> Vec<Field> {
-//     vec![
-//         Field::new(
-//             "centroids",
-//             DataType::List(Box::new(DataType::Struct(vec![
-//                 Field::new("mean", DataType::Float64),
-//                 Field::new("weight", DataType::Int64),
-//             ]))),
-//         ),
-//         Field::new("sum", DataType::Float64),
-//         Field::new("min", DataType::Float64),
-//         Field::new("max", DataType::Float64),
-//         Field::new("count", DataType::Int64),
-//         Field::new("max_size", DataType::Int64),
-//     ]
-// }
 
 // ------------------------------- core helpers -------------------------------
 
@@ -120,9 +112,9 @@ fn tdigest_from_series(inputs: &[Series], max_size: usize) -> PolarsResult<TDige
         values
             .downcast_iter()
             .par_bridge()
-            .map(|chunk| {
+            .map(|chunk: &Float64Array| {
                 let t = TDigest::new_with_size(max_size);
-                let array = chunk.as_any().downcast_ref::<Float64Array>().unwrap();
+                let array = chunk;
                 t.merge_unsorted(array.non_null_values_iter().collect())
             })
             .collect::<Vec<TDigest>>()
@@ -161,14 +153,14 @@ pub(crate) fn estimate_quantile_impl(inputs: &[Series], q: f64) -> PolarsResult<
             [Some(val)]
         }
     };
-    Ok(Series::new("", out))
+    Ok(Series::new("".into(), out))
 }
 
 /// Plain, testable implementation of estimate_cdf expr.
 pub(crate) fn estimate_cdf_impl(inputs: &[Series]) -> PolarsResult<Series> {
     let td = parse_tdigest(&inputs[..1]);
     if td.is_empty() {
-        return Ok(Series::new("", [None::<f64>]));
+        return Ok(Series::new("".into(), [None::<f64>]));
     }
 
     let x_series = &inputs[1];
@@ -184,12 +176,12 @@ pub(crate) fn estimate_cdf_impl(inputs: &[Series]) -> PolarsResult<Series> {
         td.estimate_cdf(&vals).into_iter().map(Some).collect()
     };
 
-    Ok(Series::new("", out))
+    Ok(Series::new("".into(), out))
 }
 
 // --------------------------- proc-macro forwarders ---------------------------
 
-#[polars_expr(output_type_func=tdigest_output)]
+#[cfg_attr(feature = "python", polars_expr(output_type_func = tdigest_output))]
 pub(crate) fn tdigest(inputs: &[Series], kwargs: TDigestKwargs) -> PolarsResult<Series> {
     tdigest_impl(inputs, kwargs.max_size)
 }
@@ -203,21 +195,12 @@ pub(crate) fn tdigest_32_impl(inputs: &[Series], max_size: usize) -> PolarsResul
     Ok(tdigest_to_series_32(td, inputs[0].name()))
 }
 
-// expr forwarder
-#[polars_expr(output_type_func=tdigest_output_32)]
+#[cfg_attr(feature = "python", polars_expr(output_type_func = tdigest_output_32))]
 pub(crate) fn tdigest_32(inputs: &[Series], kwargs: TDigestKwargs) -> PolarsResult<Series> {
     tdigest_32_impl(inputs, kwargs.max_size)
 }
 
-// #[polars_expr(output_type_func=tdigest_output)]
-// pub(crate) fn tdigest_32(inputs: &[Series], kwargs: TDigestKwargs) -> PolarsResult<Series> {
-//     // Phase 1: behavior-identical to `tdigest` so this compiles and ships safely.
-//     // Next phase will switch this to a 32 payload (new schema + serializer).
-//     let td = tdigest_from_series(inputs, kwargs.max_size)?;
-//     Ok(tdigest_to_series(td, inputs[0].name()))
-// }
-
-#[polars_expr(output_type_func=tdigest_output)]
+#[cfg_attr(feature = "python", polars_expr(output_type_func = tdigest_output))]
 fn merge_tdigests(inputs: &[Series]) -> PolarsResult<Series> {
     merge_tdigests_impl(inputs)
 }
@@ -227,23 +210,23 @@ pub(crate) fn merge_tdigests_impl(inputs: &[Series]) -> PolarsResult<Series> {
     Ok(tdigest_to_series(td, inputs[0].name()))
 }
 
-#[polars_expr(output_type=Float64)]
+#[cfg_attr(feature = "python", polars_expr(output_type = Float64))]
 pub(crate) fn estimate_quantile(inputs: &[Series], kwargs: QuantileKwargs) -> PolarsResult<Series> {
     estimate_quantile_impl(inputs, kwargs.quantile)
 }
 
-#[polars_expr(output_type=Float64)]
+#[cfg_attr(feature = "python", polars_expr(output_type = Float64))]
 pub(crate) fn estimate_cdf(inputs: &[Series]) -> PolarsResult<Series> {
     estimate_cdf_impl(inputs)
 }
 
-#[polars_expr(output_type=Float64)]
+#[cfg_attr(feature = "python", polars_expr(output_type = Float64))]
 pub(crate) fn estimate_median(inputs: &[Series]) -> PolarsResult<Series> {
     let td = parse_tdigest(inputs);
     if td.is_empty() {
-        Ok(Series::new("", [None::<f64>]))
+        Ok(Series::new("".into(), [None::<f64>]))
     } else {
-        Ok(Series::new("", [Some(td.estimate_median())]))
+        Ok(Series::new("".into(), [Some(td.estimate_median())]))
     }
 }
 
@@ -254,12 +237,14 @@ mod tests {
 
     #[test]
     fn expr_impl_smoke_minimal() {
-        let inputs = [Series::new("n", [1, 2, 3]).cast(&DataType::Int32).unwrap()];
+        let inputs = [Series::new("n".into(), [1, 2, 3])
+            .cast(&DataType::Int32)
+            .unwrap()];
         let td_ser = tdigest_impl(&inputs, 100).unwrap();
         let q_ser = estimate_quantile_impl(&[td_ser.clone()], 0.5).unwrap();
         let q = q_ser.f64().unwrap().get(0).unwrap();
         assert_exact("estimate_quantile_impl median = {q}, expected 2.0", 2.0, q);
-        let cdf_ser = estimate_cdf_impl(&[td_ser, Series::new("", &[2.0_f64])]).unwrap();
+        let cdf_ser = estimate_cdf_impl(&[td_ser, Series::new("".into(), &[2.0_f64])]).unwrap();
         let cdf = cdf_ser.f64().unwrap().get(0).unwrap();
         assert_exact("estimate_cdf_impl CDF(2.0) = {cdf}, expected 0.5", 0.5, cdf);
     }
@@ -267,7 +252,7 @@ mod tests {
     /// Empty input ⇒ empty digest ⇒ quantile impl returns None.
     #[test]
     fn expr_impl_empty_returns_none() {
-        let empty_inputs = [Series::new("n", Vec::<i32>::new())
+        let empty_inputs = [Series::new("n".into(), Vec::<i32>::new())
             .cast(&DataType::Int32)
             .unwrap()];
         let td_ser = tdigest_impl(&empty_inputs, 100).unwrap();
@@ -287,7 +272,7 @@ mod tests {
 
     #[test]
     fn f32_vs_f64_parser_equivalence() {
-        let inputs = [Series::new("n", (1..=1000).collect::<Vec<i32>>())
+        let inputs = [Series::new("n".into(), (1..=1000).collect::<Vec<i32>>())
             .cast(&DataType::Int32)
             .unwrap()];
 
@@ -315,7 +300,7 @@ mod tests {
 
     #[test]
     fn mixed_origin_core_merge() {
-        let inputs = [Series::new("n", (1..=1000).collect::<Vec<i32>>())
+        let inputs = [Series::new("n".into(), (1..=1000).collect::<Vec<i32>>())
             .cast(&DataType::Int32)
             .unwrap()];
 

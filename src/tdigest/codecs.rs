@@ -1,6 +1,6 @@
 use crate::tdigest::{Centroid, TDigest};
 use polars::prelude::*;
-use polars::series::Series;
+// `Series` is already re-exported by the prelude; the extra import is unnecessary in 0.51.
 
 /* -----------------------------------------------------------------------------
  Compact vs canonical representations
@@ -13,7 +13,7 @@ use polars::series::Series;
      count:           Int64    (exact total count)
      max_size:        Int64
 
- - Compact (produced by `tdigest_to_series_f32`):
+ - Compact (produced by `tdigest_to_series_32`):
      centroids.mean:  Float32  (smaller, adequate precision)
      centroids.weight: UInt32  (exact up to ~4.29e9 per centroid)
      min/max:         Float32
@@ -64,9 +64,8 @@ pub(crate) fn tdigest_to_series_32(td: TDigest, name: &str) -> Series {
     let list_av = centroids_col.get(0).expect("centroids row 0");
     let centroids_list_series = match list_av {
         AnyValue::List(ls) => ls,
-        // Empty fallback. If you hit this path in practice, consider constructing
-        // an empty List with explicit inner Struct schema to make the dtype clearer.
-        _ => Series::new("centroids", &[] as &[Series]),
+        // Empty fallback: construct an empty List<Struct{mean: f32, weight: u32}>.
+        _ => Series::new("centroids".into(), &[] as &[Series]),
     };
 
     // Downcast inner fields to compact types.
@@ -84,29 +83,32 @@ pub(crate) fn tdigest_to_series_32(td: TDigest, name: &str) -> Series {
         .cast(&DataType::UInt32)
         .unwrap();
 
-    let centroids_struct_compact = StructChunked::new("centroids", &[mean_f32, weight_u32])
-        .unwrap()
-        .into_series();
+    // Build Struct{mean, weight} without StructChunked::new: go via a one-row DataFrame.
+    let centroids_struct_compact = DataFrame::new(vec![
+        Series::new("mean".into(), mean_f32).into(),
+        Series::new("weight".into(), weight_u32).into(),
+    ])
+    .unwrap()
+    .into_struct("centroids".into())
+    .into_series();
 
     // Wrap the single Struct as a one-row List.
-    let centroids_list_compact = Series::new("centroids", &[centroids_struct_compact]);
+    let centroids_list_compact = Series::new("centroids".into(), &[centroids_struct_compact]);
 
     // min/max → f32; keep sum/count/max_size as-is for precision/consistency.
     let min_f32 = min_col.cast(&DataType::Float32).unwrap();
     let max_f32 = max_col.cast(&DataType::Float32).unwrap();
 
-    StructChunked::new(
-        name,
-        &[
-            centroids_list_compact,
-            sum_col.clone(),
-            min_f32,
-            max_f32,
-            count_col.clone(),
-            max_size_col.clone(),
-        ],
-    )
+    DataFrame::new(vec![
+        centroids_list_compact.into(),
+        sum_col.clone().into(),
+        min_f32.into(),
+        max_f32.into(),
+        count_col.clone().into(),
+        max_size_col.clone().into(),
+    ])
     .unwrap()
+    .into_struct(name.into())
     .into_series()
 }
 
@@ -251,11 +253,12 @@ pub fn parse_tdigests(input: &Series) -> Vec<TDigest> {
             count_it
                 .map(|c| {
                     let centroids = centroids_it.next().unwrap().unwrap();
-                    let mean_series = centroids.struct_().unwrap().field_by_name("mean").unwrap();
+                    let sc = centroids.struct_().unwrap();
+
+                    let mean_series = sc.field_by_name("mean").unwrap();
                     let mean_it = mean_series.f64().unwrap().into_iter();
-                    let weight_series = centroids
-                        .struct_()
-                        .unwrap()
+
+                    let weight_series = sc
                         .field_by_name("weight")
                         .unwrap()
                         .cast(&DataType::Float64)
@@ -306,25 +309,30 @@ pub fn tdigest_to_series(tdigest: TDigest, name: &str) -> Series {
         means.push(c.mean());
     });
 
-    let centroids_series = DataFrame::new(vec![
-        Series::new("mean", means),
-        Series::new("weight", weights),
+    // Build inner Struct{mean, weight}.
+    let centroids_struct = DataFrame::new(vec![
+        Series::new("mean".into(), means).into(),
+        Series::new("weight".into(), weights).into(),
     ])
     .unwrap()
-    .into_struct("centroids")
+    .into_struct("centroids".into())
     .into_series();
 
+    // Wrap inner struct as a one-row List and assemble the outer Struct.
     DataFrame::new(vec![
-        // Wrap centroids struct as a 1-row List for the outer struct’s `centroids` field.
-        Series::new("centroids", [Series::new("centroids", centroids_series)]),
-        Series::new("sum", [tdigest.sum()]),
-        Series::new("min", [tdigest.min()]),
-        Series::new("max", [tdigest.max()]),
-        Series::new("count", [tdigest.count() as i64]),
-        Series::new("max_size", [tdigest.max_size() as i64]),
+        Series::new(
+            "centroids".into(),
+            [Series::new("centroids".into(), centroids_struct)],
+        )
+        .into(),
+        Series::new("sum".into(), [tdigest.sum()]).into(),
+        Series::new("min".into(), [tdigest.min()]).into(),
+        Series::new("max".into(), [tdigest.max()]).into(),
+        Series::new("count".into(), [tdigest.count() as i64]).into(),
+        Series::new("max_size".into(), [tdigest.max_size() as i64]).into(),
     ])
     .unwrap()
-    .into_struct(name)
+    .into_struct(name.into())
     .into_series()
 }
 
@@ -340,7 +348,11 @@ mod tests {
         let cursor = Cursor::new(json_str);
         let df = JsonReader::new(cursor).finish().unwrap();
         let series = df.column("tdigest").unwrap();
-        let res = parse_tdigests(series);
+        let res = parse_tdigests(
+            series
+                .as_series()
+                .expect("expected a Series-backed Column here"),
+        );
 
         let expected = vec![
             TDigest::new(
@@ -390,28 +402,28 @@ mod tests {
 
         // Expected canonical struct.
         let cs = DataFrame::new(vec![
-            Series::new("mean", [10.0, 20.0, 30.0]),
-            Series::new("weight", [1_i64, 2, 3]),
+            Series::new("mean".into(), [10.0, 20.0, 30.0]).into(),
+            Series::new("weight".into(), [1_i64, 2, 3]).into(),
         ])
         .unwrap()
-        .into_struct("centroids")
+        .into_struct("centroids".into())
         .into_series();
 
         let expected = DataFrame::new(vec![
-            Series::new("centroids", [Series::new("a", cs)]),
-            Series::new("sum", [60.0]),
-            Series::new("min", [10.0]),
-            Series::new("max", [30.0]),
-            Series::new("count", [3_i64]),
-            Series::new("max_size", [300_i64]),
+            Series::new("centroids".into(), [Series::new("a".into(), cs)]).into(),
+            Series::new("sum".into(), [60.0]).into(),
+            Series::new("min".into(), [10.0]).into(),
+            Series::new("max".into(), [30.0]).into(),
+            Series::new("count".into(), [3_i64]).into(),
+            Series::new("max_size".into(), [300_i64]).into(),
         ])
         .unwrap()
-        .into_struct("n")
+        .into_struct("n".into())
         .into_series();
 
         assert!(ser == expected);
 
-        // Compact writer (mean 32, weight u32, min/max 32) still parses back to the same TDigest.
+        // Compact writer (mean f32, weight u32, min/max f32) still parses back to the same TDigest.
         let compact = tdigest_to_series_32(tdigest.clone(), "n");
         let parsed = parse_tdigests_any(&compact);
         assert_eq!(parsed.len(), 1);
