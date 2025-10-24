@@ -228,7 +228,7 @@ fn exact_ecdf_for_sorted(sorted: &[f64]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tdigest::{ScaleFamily, TDigest};
+    use crate::tdigest::{tdigest::TDigestBuilder, ScaleFamily};
 
     #[test]
     fn cdf_small_max10_medn_100_simple() {
@@ -238,7 +238,7 @@ mod tests {
         values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         let td =
-            TDigest::new_with_size_and_scale(10, ScaleFamily::Quad).merge_sorted(values.clone());
+            TDigestBuilder::new().max_size(10).scale(ScaleFamily::Quad).build().merge_sorted(values.clone());
         let approx = td.estimate_cdf(&values);
         assert_eq!(approx.len(), values.len());
 
@@ -286,7 +286,7 @@ mod tests {
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         let exact = super::exact_ecdf_for_sorted(&vals);
-        let approx = TDigest::new_with_size(N + 1)
+        let approx = TDigestBuilder::new().max_size(N + 1).build()
             .merge_sorted(vals.clone())
             .estimate_cdf(&vals);
 

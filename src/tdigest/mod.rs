@@ -13,10 +13,8 @@ mod singleton_policy;
 mod tdigest;
 
 // Public surface
-pub use centroids::Centroid;
-pub use scale::ScaleFamily;
-pub use singleton_policy::SingletonPolicy;
-pub use tdigest::TDigest;
+pub use self::tdigest::{TDigest, TDigestBuilder, ScaleFamily, SingletonPolicy, Centroid};
+
 
 // Opt-in tracing (cheap unless env var set)
 #[macro_export]

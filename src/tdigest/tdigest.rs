@@ -90,14 +90,6 @@ impl TDigest {
         TDigestBuilder::default()
     }
 
-    /// Legacy conveniences (kept for low churn; they use builder defaults unless overridden).
-    pub fn new_with_size(max_size: usize) -> Self {
-        Self::builder().max_size(max_size).build()
-    }
-    pub fn new_with_size_and_scale(max_size: usize, scale: ScaleFamily) -> Self {
-        Self::builder().max_size(max_size).scale(scale).build()
-    }
-
     #[inline]
     pub(crate) fn set_sum(&mut self, s: f64) {
         self.sum = OrderedFloat(s);
@@ -253,7 +245,7 @@ impl TDigest {
         } else {
             let sz = centroids.len();
             let digests = vec![
-                TDigest::new_with_size(100),
+                TDigestBuilder::new().max_size(100).build(),
                 TDigest::new(centroids, sum, count, max, min, sz),
             ];
             Self::merge_digests(digests)
@@ -338,7 +330,7 @@ mod tests {
     fn singletons_grouped_runs() {
         // Values: three 1s, one 2, two 3s
         let vals = vec![1.0, 1.0, 1.0, 2.0, 3.0, 3.0];
-        let t = TDigest::new_with_size(64).merge_sorted(vals);
+        let t = TDigestBuilder::new().max_size(64).build().merge_sorted(vals);
 
         let cs = t.centroids();
         assert!(
@@ -390,7 +382,7 @@ mod tests {
     #[test]
     fn merge_unsorted_smoke_small() {
         let vals = vec![5.0, 1.0, 3.0, 4.0, 2.0, 2.0, 9.0, 7.0];
-        let t = TDigest::new_with_size(64).merge_unsorted(vals.clone());
+        let t = TDigestBuilder::new().max_size(64).build().merge_unsorted(vals.clone());
 
         assert_exact("count", vals.len() as f64, t.count());
         assert_exact("min", 1.0, t.min());
@@ -406,9 +398,9 @@ mod tests {
     #[test]
     fn merge_digests_two_blocks_smoke() {
         let d1 =
-            TDigest::new_with_size(128).merge_sorted((1..=5).map(f64::from).collect::<Vec<_>>());
+            TDigestBuilder::new().max_size(128).build().merge_sorted((1..=5).map(f64::from).collect::<Vec<_>>());
         let d2 =
-            TDigest::new_with_size(128).merge_sorted((6..=10).map(f64::from).collect::<Vec<_>>());
+            TDigestBuilder::new().max_size(128).build().merge_sorted((6..=10).map(f64::from).collect::<Vec<_>>());
 
         let t = TDigest::merge_digests(vec![d1, d2]);
 

@@ -171,14 +171,14 @@ impl TDigest {
 
 #[cfg(test)]
 mod tests {
+    use crate::tdigest::tdigest::TDigestBuilder;
     use crate::tdigest::test_helpers::*;
-    use crate::tdigest::TDigest;
 
     #[test]
     fn centroid_addition_regression_pr_1() {
         // https://github.com/MnO2/t-digest/pull/1
         let vals = vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0];
-        let mut t = TDigest::new_with_size(10);
+        let mut t = TDigestBuilder::new().max_size(10).build();
         for v in vals {
             t = t.merge_unsorted(vec![v]);
         }
@@ -204,7 +204,7 @@ mod tests {
     fn quantiles_small_max10_smalln() {
         let mut values = vec![-10.0, -1.0, 0.0, 0.0, 2e-10, 1.0, 2.0, 10.0, 1e9, -1e9];
         values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let t = TDigest::new_with_size(10).merge_sorted(values.clone());
+        let t = TDigestBuilder::new().max_size(10).build().merge_sorted(values.clone());
 
         assert_exact("Q(0)", *values.first().unwrap(), t.estimate_quantile(0.0));
         assert_exact("Q(1)", *values.last().unwrap(), t.estimate_quantile(1.0));
@@ -230,7 +230,7 @@ mod tests {
     fn quantiles_small_max10_medn_100() {
         let mut values: Vec<f64> = (-30..=69).map(|x| x as f64).collect(); // 100 values
         values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let t = TDigest::new_with_size(10).merge_sorted(values.clone());
+        let t = TDigestBuilder::new().max_size(10).build().merge_sorted(values.clone());
 
         for &(q, label) in &[
             (0.01_f64, "Q(0.01)"),
@@ -251,7 +251,7 @@ mod tests {
     fn median_between_centroids_even_count() {
         // With symmetric bracketing, Q(0.5) equals the average of the two middle piles (→ 0.0).
         for num in [1, 2, 3, 10, 20] {
-            let mut t = TDigest::new_with_size(100);
+            let mut t = TDigestBuilder::new().max_size(100).build();
             for _ in 0..num {
                 t = t.merge_sorted(vec![-1.0]);
             }
@@ -275,7 +275,7 @@ mod tests {
             (0..N).map(|_| r.random_range(0..N as u64) as f64).collect()
         };
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let td = TDigest::new_with_size(N + 1).merge_sorted(v.clone());
+        let td = TDigestBuilder::new().max_size(N + 1).build().merge_sorted(v.clone());
 
         assert_exact("Q(0)", v[0], td.estimate_quantile(0.0));
         assert_exact("Q(1)", v[N - 1], td.estimate_quantile(1.0));

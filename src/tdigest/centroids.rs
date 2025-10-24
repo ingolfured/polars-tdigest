@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 /// `singleton` is a *data* flag:
 /// - `true` for an atomic ECDF jump (a raw singleton with `weight==1`, or a pile of
 ///   identical values with `weight>=2`),
-/// - `false` for a mixed cluster.
+/// - `false` for a mixed cluster (a blend of multiple distinct means).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Centroid {
     mean: OrderedFloat<f64>,
@@ -20,6 +20,7 @@ impl PartialOrd for Centroid {
         Some(self.cmp(other))
     }
 }
+
 impl Ord for Centroid {
     fn cmp(&self, other: &Centroid) -> Ordering {
         // We never output duplicate means; ordering by mean alone is fine.
@@ -45,7 +46,7 @@ impl Centroid {
         Self::new_mixed(mean, weight)
     }
 
-    /// Explicit: a centroid that is a data-true singleton (raw or pile).
+    /// Explicit: a centroid that is a data-true singleton (raw or a same-mean pile).
     #[inline]
     pub fn new_singleton(mean: f64, weight: f64) -> Self {
         debug_assert!(weight >= 1.0);
@@ -64,6 +65,16 @@ impl Centroid {
             mean: OrderedFloat::from(mean),
             weight: OrderedFloat::from(weight),
             singleton: false,
+        }
+    }
+
+    /// Generic constructor that sets the singleton flag explicitly.
+    #[inline]
+    pub fn from_parts(mean: f64, weight: f64, singleton: bool) -> Self {
+        if singleton {
+            Self::new_singleton(mean, weight)
+        } else {
+            Self::new_mixed(mean, weight)
         }
     }
 
@@ -102,23 +113,23 @@ impl Centroid {
 }
 
 /* ===========================
- * Helpers used by compressor
+ * Small helpers
  * =========================== */
 
-/// Strictly increasing by mean.
+/// Strictly increasing by mean (no duplicates).
 #[inline]
 pub fn is_sorted_strict_by_mean(cs: &[Centroid]) -> bool {
     cs.windows(2).all(|w| w[0].mean() < w[1].mean())
 }
 
-/// Non-strictly increasing by mean (allows equal means).
+/// Non-strictly increasing by mean (duplicates allowed).
 #[inline]
 pub fn is_sorted_by_mean(cs: &[Centroid]) -> bool {
     cs.windows(2).all(|w| w[0] <= w[1])
 }
 
-/// Merge adjacent centroids that have the exact same mean into a single centroid.
-/// Keeps `singleton=true` and sums weights (because equal-mean runs are piles).
+/// Merge *adjacent* centroids that have the exact same mean into a single centroid.
+/// Keeps/sets `singleton=true` and sums weights (because equal-mean runs are piles).
 pub fn coalesce_adjacent_equal_means(xs: Vec<Centroid>) -> Vec<Centroid> {
     if xs.len() <= 1 {
         return xs;

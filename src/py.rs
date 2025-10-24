@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::tdigest::{ScaleFamily, TDigest as CoreTDigest};
+use crate::tdigest::{ScaleFamily, TDigest as CoreTDigest, SingletonPolicy};
 
 use bincode::config;
 use bincode::serde::{decode_from_slice, encode_to_vec};
@@ -37,10 +37,19 @@ impl PyTDigest {
             ));
         }
         let sc = parse_scale(scale)?;
-        let base = CoreTDigest::new_with_size_and_scale(max_size, sc);
-        Ok(Self {
-            inner: base.merge_unsorted(xs),
-        })
+
+        // Build an empty digest with the chosen scale, then merge the data.
+        // SingletonPolicy::Off keeps Python side simple/predictable.
+        let base = CoreTDigest::new(
+            Vec::new(),         // centroids
+            0.0,                // sum
+            0.0,                // count
+            sc,                 // scale
+            SingletonPolicy::Off,
+            max_size,
+        );
+
+        Ok(Self { inner: base.merge_unsorted(xs) })
     }
 
     pub fn median(&self) -> PyResult<f64> {
