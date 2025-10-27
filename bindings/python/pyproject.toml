@@ -3,10 +3,10 @@ requires = ["maturin[patchelf,zig]>=1.9.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "tdigest_rs"
+name = "tdigest-rs"                     # matches version("tdigest-rs") in __init__.py
 dynamic = ["version"]
-description = "Rust TDigest with Python, Polars and JNI"
-readme = "README.md"
+description = "Rust TDigest with Python (class API) and Polars expressions"
+readme = "../../README.md"              # important: exists relative to bindings/python/
 license = { text = "Apache-2.0" }
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Ingolfur Edvardsson", email = "ingo.edvardsson@gresearch.co.uk" }]
@@ -19,10 +19,13 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
-# Runtime dependencies
+# Keep runtime deps minimal; Polars is optional (only needed for expr API).
 dependencies = [
-  "polars>=1.34.0",
+  "numpy>=2.0.0",
 ]
+
+[project.optional-dependencies]
+polars = ["polars>=1.34.0"]
 
 # Dev groups (PEP 735). uv understands these and can install with --group/--all-groups.
 [dependency-groups]
@@ -33,18 +36,21 @@ dev = [
   "maturin[patchelf,zig]>=1.9.5",
   "numpy>=2.3.3",
   "mypy>=1.18.2",
+  "polars>=1.34.0",  # dev/test convenience; not required by end users
 ]
 
-# ------------------------------------------------------------
-# Maturin build settings
-# ------------------------------------------------------------
 [tool.maturin]
+manifest-path = "../../Cargo.toml"     # your Rust crate at repo root
 features = ["python"]
-bindings = "pyo3"
-module-name = "tdigest_rs._tdigest_rs"
+bindings = "pyo3-abi3"
+module-name = "tdigest_rs.tdigest_rs"  # put the extension inside the package
+python-source = "."
 strip = true
 manylinux = "2_28"
 zig = true
+include = ["tdigest_rs/**"]
+
+
 
 # ------------------------------------------------------------
 # Ruff

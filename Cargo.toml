@@ -43,6 +43,7 @@ rayon          = "1.11"
 serde          = { version = "1.0.228", features = ["derive"] }
 serde_json     = "1.0.145"
 
+
 # jemalloc on Linux only (safer TLS flag for some distros)
 [target.'cfg(target_os = "linux")'.dependencies]
 jemallocator = { version = "0.5", features = ["disable_initial_exec_tls"] }

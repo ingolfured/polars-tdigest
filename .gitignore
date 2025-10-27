@@ -71,3 +71,16 @@ tmp/
 *.tmp
 *.bak
 *.old
+
+# Python extension artifacts
+bindings/python/tdigest_rs/*.so
+bindings/python/tdigest_rs/*.pyd
+bindings/python/tdigest_rs/*.dll
+bindings/python/tdigest_rs/*.dylib
+
+# Build outputs
+dist/
+target/
+.eggs/
+build/
+*.egg-info/

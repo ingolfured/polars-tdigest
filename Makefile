@@ -16,7 +16,7 @@ STYLE_OK    := $(shell tput setaf 2 2>/dev/null || printf '\033[32m')
 STYLE_ERR   := $(shell tput setaf 1 2>/dev/null || printf '\033[31m')
 STYLE_BOLD  := $(shell tput bold 2>/dev/null     || printf '\033[1m')
 STYLE_RESET := $(shell tput sgr0 2>/dev/null     || printf '\033[0m')
-STYLE_CODE  := $(shell tput setaf 6 2>/dev/null || printf '\033[36m')  # cyan for code/examples
+STYLE_CODE  := $(shell tput setaf 6 2>/dev/null || printf '\033[36m')  # cyan
 
 define banner
 	@printf "\n$(STYLE_BOLD)==> %s$(STYLE_RESET)\n" "$(1)"
@@ -41,16 +41,31 @@ JAVA   ?= java
 JAR    ?= jar
 PYTHON ?= python3
 
-JAVA_SRC := src-java
+# Python layout (single package tree inside bindings/python/)
+PY_ROOT       := bindings/python
+PY_PYPROJECT  := $(PY_ROOT)/pyproject.toml
+PY_PKG_DIR    := $(PY_ROOT)/tdigest_rs
+PY_TEST_DIR   := $(PY_ROOT)/tests
+
+# CLI binary
 LIB_DIR  := target/release
-CP_DEV   := target/java-classes
+CLI_BIN  ?= tdigest
+CLI_PATH := $(LIB_DIR)/$(CLI_BIN)
+
+# Distributions
+DIST ?= $(PY_ROOT)/dist
 
 # Version (from Cargo.toml)
 VER := $(shell sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -1)
 
-# Platform detection
+# Platform detection (for JNI JAR)
 UNAME_S := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 UNAME_M := $(shell uname -m)
+
+# Python extension module naming (PyO3 / maturin)
+EXPECTED_PYMODULE ?= tdigest_rs
+EXPECTED_INITSYM  ?= PyInit_tdigest_rs
+MATURIN_MODULE_NAME ?= tdigest_rs.$(EXPECTED_PYMODULE)
 
 ifeq ($(findstring linux,$(UNAME_S)),linux)
   PLAT := linux
@@ -80,26 +95,16 @@ else
   ARCH := $(UNAME_M)
 endif
 
-# JAR output locations
-JAVA_PKG_DIR   := target/java
-API_JAR        := $(JAVA_PKG_DIR)/tdigest-rs-java-$(VER).jar
-API_MANIFEST   := $(JAVA_PKG_DIR)/MANIFEST.MF
-NATIVE_JAR_CUR := $(JAVA_PKG_DIR)/tdigest-rs-java-$(VER)-$(PLAT)-$(ARCH).jar
-STAGE          := target/jar-staging
-
-# CLI binary
-CLI_BIN  ?= tdigest
-CLI_PATH := $(LIB_DIR)/$(CLI_BIN)
-
-# Distributions
-DIST ?= dist
+# Java
+JAVA_SRC := bindings/java/src
+CP_DEV   := target/java-classes
 
 # ==============================================================================
 # PHONY TARGETS
 # ==============================================================================
 .PHONY: help setup build fmt lint clean test help-me-run \
         rust-build rust-test rust-cli-smoke \
-        py-build py-test wheel \
+        py-build py-build-v py-test wheel \
         java-build java-test jar release
 
 # ==============================================================================
@@ -107,21 +112,22 @@ DIST ?= dist
 # ==============================================================================
 help:
 	@printf "\n$(STYLE_BOLD)Core$(STYLE_RESET)\n"
-	@printf "  %-18s %s\n" "setup"        "Install toolchains and Python env (uv), then smoke-import Polars"
+	@printf "  %-18s %s\n" "setup"        "Install toolchains and create a Python env with uv"
 	@printf "  %-18s %s\n" "build"        "Build Rust lib+CLI (with smoke), Python extension, and Java classes"
+	@printf "  %-18s %s\n" "release"      "Build CLI, Python wheel, and Java JARs — and smoke-test all three"
+	@printf "  %-18s %s\n" "help-me-run"  "Four examples: CLI, Pure Python, Polars, Java (inline + run)"
+	@printf "\n$(STYLE_BOLD)Dev-only$(STYLE_RESET)\n"
 	@printf "  %-18s %s\n" "test"         "Run: Rust tests and Python tests"
 	@printf "  %-18s %s\n" "fmt"          "Format Rust (rustfmt) and Python (ruff format)"
 	@printf "  %-18s %s\n" "lint"         "Lint Rust (clippy -D warnings) and Python (ruff)"
 	@printf "  %-18s %s\n" "clean"        "Remove Rust, Python, Java, and distribution artifacts"
-	@printf "  %-18s %s\n" "help-me-run"  "Four examples: CLI, Pure Python, Polars (lazy), Java (inline + run)"
-	@printf "  %-18s %s\n" "release"      "Build & validate CLI (smoke), wheel (smoke), and JARs (smoke)"
 	@printf "\n$(STYLE_BOLD)Rust$(STYLE_RESET)\n"
-	@printf "  %-18s %s\n" "rust-build"   "cargo build --release (lib) + --bin $(CLI_BIN) (CLI), then smoke-test CLI"
+	@printf "  %-18s %s\n" "rust-build"   "cargo build --release (lib) + --bin $(CLI_BIN) (CLI), then smoke-test"
 	@printf "  %-18s %s\n" "rust-test"    "cargo test -- --quiet"
 	@printf "\n$(STYLE_BOLD)Python$(STYLE_RESET)\n"
-	@printf "  %-18s %s\n" "py-build"     "Editable install via maturin develop -r -F python"
-	@printf "  %-18s %s\n" "py-test"      "pytest -q"
-	@printf "  %-18s %s\n" "wheel"        "Build wheel(s) (manylinux_2_28 + zig) into $(DIST)/ and smoke-test install"
+	@printf "  %-18s %s\n" "py-build"     "maturin develop -r from $(PY_ROOT) (pyproject.toml lives there)"
+	@printf "  %-18s %s\n" "py-test"      "pytest -q on $(PY_TEST_DIR)"
+	@printf "  %-18s %s\n" "wheel"        "Build one wheel (manylinux_2_28+zig) from $(PY_ROOT), smoke-install"
 	@printf "\n$(STYLE_BOLD)Java/JNI$(STYLE_RESET)\n"
 	@printf "  %-18s %s\n" "java-build"   "Build native lib (features=java) and compile Java classes to $(CP_DEV)/"
 	@printf "  %-18s %s\n" "jar"          "Package API JAR + native JAR; runs Java smoke after packaging"
@@ -137,9 +143,9 @@ setup:
 	$(call need,uv)
 	$(UV) --version
 
-	$(call banner,Create .venv and install deps (all groups))
+	$(call banner,Create .venv and install dev deps)
 	$(UV) python install 3.12 || true
-	$(UV) sync --all-groups
+	$(UV) pip install "maturin>=1.9.5,<2.0" "ruff>=0.4" "pytest>=8.0" "polars>=1.34.0" numpy
 
 	$(call banner,Quick Python import smoke)
 	$(UV) run python -c "import polars as pl, sys; print('python', sys.version.split()[0], '| polars', pl.__version__, '| env ok')"
@@ -170,13 +176,12 @@ clean:
 	$(CARGO) clean || true
 
 	$(call banner,Clean: Java classes & jars)
-	rm -rf "$(CP_DEV)" "$(JAVA_PKG_DIR)" "$(STAGE)"
-	find "$(JAVA_SRC)" -type f \( -name '*.class' -o -name '*.java.bak' \) -delete || true
+	rm -rf "$(CP_DEV)" "target/java" "target/jar-staging"
+	find "bindings/java" -type f \( -name '*.class' -o -name '*.java.bak' \) -delete || true
 
 	$(call banner,Clean: Python artifacts)
-	find . -type d -name "__pycache__" -prune -exec rm -rf {} + || true
-	# Native extension outputs (Linux/macOS/Windows)
-	rm -f tdigest_rs/*.so tdigest_rs/*.dylib tdigest_rs/*.pyd tdigest_rs/*.dll || true
+	find bindings -type d -name "__pycache__" -prune -exec rm -rf {} + || true
+	find bindings -type f -name "*.so" -delete || true
 	rm -rf .venv-wheeltest || true
 
 	$(call banner,Clean: Distribution packages)
@@ -189,81 +194,34 @@ test: rust-test py-test
 	@echo "✅ all tests passed"
 
 # ==============================================================================
-# Help me run — four colored examples with separators
-# ==============================================================================
-# ==============================================================================
-# Help me run — four colored examples with separators
-# ==============================================================================
-help-me-run:
-# ==============================================================================
-# Help me run — four colored examples with separators
+# Help me run — colored examples (printed only)
 # ==============================================================================
 help-me-run:
 	$(call sep)
 	@printf "$(STYLE_BOLD)1) Rust — CLI$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)echo '0 1 2 3' | target/release/$(CLI_BIN) --stdin --cmd quantile --p 0.5 --no-header$(STYLE_RESET)\n"
+	@printf "$(STYLE_CODE)echo '0 1 2 3' | target/release/$(CLI_BIN) --stdin --cmd quantile --p 0.5 --no-header --output csv$(STYLE_RESET)\n"
 	@printf "# output: 0.5,1.5\n"
 
 	$(call sep)
 	@printf "$(STYLE_BOLD)2) Pure Python$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)uv run python - <<'PY'$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import tdigest_rs as td$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)values = [0.0, 1.0, 2.0, 3.0]$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)d = td.TDigest.from_array(values, max_size=100, scale='k2')$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)print('p50 =', d.quantile(0.5))          # -> 1.5$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)print('cdf =', d.cdf([0.0, 1.5, 3.0]).tolist())  # -> [0.125, 0.5, 0.875]$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)PY$(STYLE_RESET)\n"
+	@printf "$(STYLE_CODE)uv run python -c \"import tdigest_rs as td; d=td.TDigest.from_array([0.0,1.0,2.0,3.0], max_size=100, scale='k2'); print('p50=', d.quantile(0.5)); print('cdf=', d.cdf([0.0,1.5,3.0]).tolist())\"$(STYLE_RESET)\n"
 
 	$(call sep)
 	@printf "$(STYLE_BOLD)3) Polars (lazy)$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)uv run python - <<'PY'$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import polars as pl$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)from tdigest_rs import tdigest, quantile  # expr functions$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)df = pl.DataFrame({'g':['a']*5, 'x':[0,1,2,3,4]})$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)out = ($(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)    df.lazy().group_by('g')$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)    .agg(tdigest(pl.col('x'), max_size=100, scale='k2').alias('td'))$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)    .select(quantile('td', 0.5))$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)    .collect()$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE))$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)print(out)$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)PY$(STYLE_RESET)\n"
+	@printf "$(STYLE_CODE)uv run python -c \"import polars as pl; from tdigest_rs.polars import tdigest, quantile; df=pl.DataFrame({'g':['a']*5,'x':[0,1,2,3,4]}); out=(df.lazy().group_by('g').agg(tdigest(pl.col('x'), max_size=100, scale='k2').alias('td')).select(quantile('td',0.5)).collect()); print(out)\"$(STYLE_RESET)\n"
 
 	$(call sep)
 	@printf "$(STYLE_BOLD)4) Java — inline Hello + compile + run$(STYLE_RESET)\n"
 	@printf "# Build artifacts (once):\n"
 	@printf "$(STYLE_CODE)make java-build jar$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)mkdir -p target/java-hello$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)cat <<'JAVA' > target/java-hello/HelloTDigest.java$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import gr.tdigest_rs.TDigest;$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import gr.tdigest_rs.TDigest.Precision;$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import gr.tdigest_rs.TDigest.Scale;$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import gr.tdigest_rs.TDigest.SingletonPolicy;$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)import java.util.Arrays;$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)public class HelloTDigest {$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)  public static void main(String[] args) {$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)    try (TDigest digest = TDigest.builder()$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)        .maxSize(100)$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)        .scale(Scale.K2)$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)        .singletonPolicy(SingletonPolicy.EDGES).keep(4)$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)        .precision(Precision.F32)$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)        .build(new float[]{0, 1, 2, 3})) {$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)      System.out.println(Arrays.toString(digest.cdf(new double[]{0.0, 1.5, 3.0})));$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)      System.out.println(\"p50 = \" + digest.quantile(0.5));$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)    }$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)  }$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)}$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)JAVA$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)javac -cp $(API_JAR) -d target/java-hello target/java-hello/HelloTDigest.java$(STYLE_RESET)\n"
-	@printf "$(STYLE_CODE)java -Djava.library.path=$(LIB_DIR) -cp $(API_JAR):target/java-hello HelloTDigest$(STYLE_RESET)\n"
+	@printf "$(STYLE_CODE)javac -cp target/java/tdigest-rs-java-$(VER).jar -d target/java-hello bindings/java/src/TestRun.java$(STYLE_RESET)\n"
+	@printf "$(STYLE_CODE)java -Djava.library.path=$(LIB_DIR) -cp target/java/tdigest-rs-java-$(VER).jar:target/java-hello TestRun$(STYLE_RESET)\n"
 	$(call sep)
-
 
 # ==============================================================================
 # Rust
 # ==============================================================================
 rust-build:
-	# Build full release (lib) and ensure CLI bin is built, then run CLI smoke
 	$(CARGO) build --release
 	$(CARGO) build --release --bin $(CLI_BIN)
 	$(MAKE) rust-cli-smoke
@@ -275,7 +233,6 @@ Q ?= 0.5
 $(CLI_PATH):
 	$(CARGO) build --release --bin $(CLI_BIN)
 
-# Hidden from help, but always used by rust-build/release
 rust-cli-smoke: $(CLI_PATH)
 	@set -eu; \
 	OUT="$$( echo '0 1 2 3' \
@@ -286,33 +243,55 @@ rust-cli-smoke: $(CLI_PATH)
 	echo "✅ rust_cli_smoke passed"
 
 # ==============================================================================
-# Python
+# Python — single tree under bindings/python with its own pyproject.toml
 # ==============================================================================
+# We *cd* into $(PY_ROOT) so maturin reads THAT pyproject.toml.
+# We pass --manifest-path back to the repo's Cargo.toml.
+
 py-build:
-	$(UV) run maturin develop -r -F python
+	# Preconditions so failures are loud and obvious
+	[ -f "$(PY_PYPROJECT)" ] || { echo "$(STYLE_ERR)✗ Missing $(PY_PYPROJECT)$(STYLE_RESET)"; exit 1; }
+	[ -f "$(PY_PKG_DIR)/__init__.py" ] || { echo "$(STYLE_ERR)✗ Missing $(PY_PKG_DIR)/__init__.py$(STYLE_RESET)"; exit 1; }
+	[ -f "$(PY_PKG_DIR)/polars/__init__.py" ] || { echo "$(STYLE_ERR)✗ Missing $(PY_PKG_DIR)/polars/__init__.py$(STYLE_RESET)"; exit 1; }
+	grep -E 'from[[:space:]]+\.[[:space:]]*tdigest_rs[[:space:]]+import' "$(PY_PKG_DIR)/__init__.py" >/dev/null \
+	  || { echo "$(STYLE_ERR)✗ __init__.py must import from .tdigest_rs (no underscore)$(STYLE_RESET)"; exit 1; }
+
+	# Build into the active venv directly
+	set -e; \
+	cd "$(PY_ROOT)"; \
+	if ! $(UV) run maturin develop -r --manifest-path ../../Cargo.toml -F python; then \
+	  printf "$(STYLE_ERR)✗ maturin develop failed — retrying with verbose logs$(STYLE_RESET)\n"; \
+	  MATURIN_LOG=debug $(UV) run maturin develop -r --manifest-path ../../Cargo.toml -F python -v -v; \
+	fi
+
+py-build-v:
+	@set -e; cd "$(PY_ROOT)"; \
+	UV_LOG=info MATURIN_LOG=info \
+	$(UV) run maturin develop -r -F python \
+		--manifest-path ../../Cargo.toml -v -v
+
 
 py-test: py-build
-	$(UV) run pytest -q
+	$(UV) run pytest -q $(PY_TEST_DIR)
 
-# Wheels: build + smoke in one target
 wheel:
-	$(call banner,Build Python wheel (manylinux_2_28 + zig))
-	mkdir -p "$(DIST)"
-	$(UV) run maturin build -r -F python --compatibility manylinux_2_28 --zig -o "$(DIST)"
-	@printf "$(STYLE_OK)✓ wheel(s) in $(DIST)$(STYLE_RESET)\n"
-	$(call banner,Smoke test the wheel in a clean venv)
-	rm -rf .venv-wheeltest
-	$(UV) venv --python 3.12 --seed .venv-wheeltest
-	.venv-wheeltest/bin/python -m pip --version || .venv-wheeltest/bin/python -m ensurepip --upgrade
-	.venv-wheeltest/bin/python -m pip install --upgrade pip
-	.venv-wheeltest/bin/python -m pip install "polars>=1.34.0,<2.0.0" numpy
-	.venv-wheeltest/bin/python -m pip install --no-index --find-links "$(DIST)" tdigest_rs
-	.venv-wheeltest/bin/python -c "import tdigest_rs as td; d=td.TDigest.from_array([0.0,1.0,2.0,3.0],max_size=100,scale='k2'); print('p50=',d.quantile(0.5)); print('cdf=',d.cdf([0.0,1.5,3.0]).tolist())"
-	rm -rf .venv-wheeltest
-	@echo "$(STYLE_OK)✓ wheel build + smoke ok$(STYLE_RESET)"
+	@set -eu; \
+	cd bindings/python; \
+	rm -rf dist && mkdir -p dist; \
+	uv run maturin build -r --manifest-path ../../Cargo.toml -F python \
+		--compatibility manylinux_2_28 --zig -o dist; \
+	WHEEL="$$(ls -1t dist/*.whl | head -1)"; \
+	python3 -m venv .venv-wheel; \
+	. .venv-wheel/bin/activate; \
+	pip install -U pip >/dev/null; \
+	pip install --no-deps "$$WHEEL" >/dev/null; \
+	python -c "import tdigest_rs as td; d=td.TDigest.from_array([0,1,2,3],max_size=100,scale='k2'); print('cdf:', d.cdf([0,1.5,3]).tolist())"; \
+	rm -rf .venv-wheel
+
+
 
 # ==============================================================================
-# Java / JNI (classes build + jars)
+# Java / JNI
 # ==============================================================================
 java-build:
 	$(call need,javac)
@@ -322,7 +301,6 @@ java-build:
 	mkdir -p "$(CP_DEV)"
 	javac -d "$(CP_DEV)" $(shell find "$(JAVA_SRC)" -type f -name '*.java')
 
-# Hidden from help; called by jar
 java-test:
 	@set -e; \
 	OUT="$$( $(JAVA) -Djava.library.path=$(LIB_DIR) -cp $(CP_DEV) TestRun )"; \
@@ -334,19 +312,18 @@ java-test:
 	[ -n "$$P50_LINE" ] || { echo "❌ p50 line missing (classes)"; exit 1; }; \
 	echo "✅ java_test (classes) passed"
 
-# Package API JAR (classes only) + native JAR (contains platform lib under /natives/<plat-arch>/)
 jar: java-build
 	$(call banner,Package Java API JAR)
-	mkdir -p "$(JAVA_PKG_DIR)" "$(STAGE)"
-	printf "Manifest-Version: 1.0\nAutomatic-Module-Name: gr.tdigest_rs\n" > "$(API_MANIFEST)"
-	$(JAR) cfm "$(API_JAR)" "$(API_MANIFEST)" -C "$(CP_DEV)" .
-	@printf "$(STYLE_OK)✓ API JAR -> %s$(STYLE_RESET)\n" "$(API_JAR)"
+	mkdir -p "target/java" "target/jar-staging"
+	printf "Manifest-Version: 1.0\nAutomatic-Module-Name: gr.tdigest_rs\n" > "target/java/MANIFEST.MF"
+	$(JAR) cfm "target/java/tdigest-rs-java-$(VER).jar" "target/java/MANIFEST.MF" -C "$(CP_DEV)" .
+	@printf "$(STYLE_OK)✓ API JAR -> %s$(STYLE_RESET)\n" "target/java/tdigest-rs-java-$(VER).jar"
 
 	$(call banner,Package platform native JAR)
-	rm -rf "$(STAGE)/natives" && mkdir -p "$(STAGE)/natives/$(PLAT)-$(ARCH)"
-	cp "$(LIB_DIR)/$(LIBBASENAME)" "$(STAGE)/natives/$(PLAT)-$(ARCH)/$(LIBBASENAME)"
-	$(JAR) cf "$(NATIVE_JAR_CUR)" -C "$(STAGE)" natives
-	@printf "$(STYLE_OK)✓ Native JAR -> %s$(STYLE_RESET)\n" "$(NATIVE_JAR_CUR)"
+	rm -rf "target/jar-staging/natives" && mkdir -p "target/jar-staging/natives/$(PLAT)-$(ARCH)"
+	cp "$(LIB_DIR)/$(LIBBASENAME)" "target/jar-staging/natives/$(PLAT)-$(ARCH)/$(LIBBASENAME)"
+	$(JAR) cf "target/java/tdigest-rs-java-$(VER)-$(PLAT)-$(ARCH).jar" -C "target/jar-staging" natives
+	@printf "$(STYLE_OK)✓ Native JAR -> %s$(STYLE_RESET)\n" "target/java/tdigest-rs-java-$(VER)-$(PLAT)-$(ARCH).jar"
 
 	$(call banner,Java smoke (post-jar))
 	$(MAKE) java-test
@@ -361,7 +338,6 @@ release:
 
 	$(call banner,Release: Build Wheel (with smoke))
 	$(MAKE) wheel
-	# Capture latest wheel for summary (most recent by mtime)
 	LAST_WHEEL="$$(ls -1t "$(DIST)"/*.whl 2>/dev/null | head -1 || true)"; \
 	if [ -z "$$LAST_WHEEL" ]; then \
 		printf "$(STYLE_ERR)✗ No wheel found in %s$(STYLE_RESET)\n" "$(DIST)"; exit 1; \
@@ -371,14 +347,13 @@ release:
 
 	$(call banner,Release: Build JARs (with smoke))
 	$(MAKE) jar
-	@printf "• API JAR    -> %s\n" "$(API_JAR)"
-	@printf "• Native JAR -> %s\n" "$(NATIVE_JAR_CUR)"
+	@printf "• API JAR    -> %s\n" "target/java/tdigest-rs-java-$(VER).jar"
+	@printf "• Native JAR -> %s\n" "target/java/tdigest-rs-java-$(VER)-$(PLAT)-$(ARCH).jar"
 
-	# Final clear artifact summary
 	@LAST_WHL="$$(cat .last-wheel-path 2>/dev/null || true)"; \
 	rm -f .last-wheel-path; \
 	printf "\n$(STYLE_BOLD)==> Artifacts$(STYLE_RESET)\n"; \
 	printf "  CLI binary : %s\n" "$(CLI_PATH)"; \
 	printf "  Wheel      : %s\n" "$${LAST_WHL:-<none>}"; \
-	printf "  Native JAR : %s\n" "$(NATIVE_JAR_CUR)"; \
+	printf "  Native JAR : %s\n" "target/java/tdigest-rs-java-$(VER)-$(PLAT)-$(ARCH).jar"; \
 	printf "\n$(STYLE_OK)✓ Release artifacts built & smoke-tested$(STYLE_RESET)\n"

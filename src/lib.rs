@@ -56,8 +56,8 @@ use pyo3::types::PyModuleMethods;
 /// `__version__` from Cargo metadata and delegate registrations to `py::register`.
 #[cfg(feature = "python")]
 #[pymodule]
-#[pyo3(name = "_tdigest_rs")]
-fn _tdigest_rs(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+// #[pyo3(name = "_tdigest_rs")]
+fn tdigest_rs(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     py::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
